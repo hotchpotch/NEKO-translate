@@ -19,7 +19,7 @@ PDF の見開き翻訳コマンドも同梱されており、たとえば論文�
 
 ### uv tool（おすすめ）
 
-まず python パッケージマネージャの uv を入れてください。
+まず python パッケージマネージャの uv のインストールが必要です。
 
 - https://docs.astral.sh/uv/getting-started/installation/
 
@@ -124,6 +124,9 @@ uv run neko-translate-pdf paper.pdf \
     --output-dir ./out \
     --model plamo
 ```
+
+なお、PDF 翻訳には時間がかかります。`mlx-community/plamo-2-translate` を使って、論文を翻訳する場合、ページ数にもよりますが M4 Max で5分〜20分ほどかかります。
+
 
 ## 翻訳モデルの選択
 
