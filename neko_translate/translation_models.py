@@ -78,6 +78,9 @@ class TranslationModel(ABC):
             tokenize=False,
         )
 
+    def default_generation(self) -> dict[str, Any]:
+        return {}
+
 
 class CATTranslateModel(TranslationModel):
     add_generation_prompt = True
@@ -141,6 +144,23 @@ class PlamoTranslateModel(TranslationModel):
             if idx != len(messages) - 1:
                 parts.append("\n")
         return "".join(parts)
+
+    def render_prompt(
+        self,
+        tokenizer: Any,
+        src_lang: str,
+        tgt_lang: str,
+        text: str,
+        no_chat_template: bool,
+    ) -> str:
+        return self.build_fallback_prompt(src_lang, tgt_lang, text)
+
+    def default_generation(self) -> dict[str, Any]:
+        return {
+            "temperature": 0.0,
+            "top_p": 0.98,
+            "top_k": 0,
+        }
 
 
 def resolve_translation_model(model_name: str) -> TranslationModel:

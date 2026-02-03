@@ -231,19 +231,19 @@ def build_server_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--temperature",
         type=float,
-        default=DEFAULT_TEMPERATURE,
+        default=None,
         help="Sampling temperature. 0 disables sampling.",
     )
     parser.add_argument(
         "--top-p",
         type=float,
-        default=DEFAULT_TOP_P,
+        default=None,
         help="Top-p sampling value.",
     )
     parser.add_argument(
         "--top-k",
         type=int,
-        default=DEFAULT_TOP_K,
+        default=None,
         help="Top-k sampling value.",
     )
     parser.add_argument(
@@ -476,7 +476,12 @@ def _build_prompt(
     )
 
 
-def _resolve_generation_args(args: argparse.Namespace) -> dict[str, Any]:
+def _resolve_generation_args(
+    args: argparse.Namespace, *, translator: Any | None = None
+) -> dict[str, Any]:
+    defaults: dict[str, Any] = {}
+    if translator is not None:
+        defaults = translator.default_generation()
     max_new_tokens = getattr(args, "max_new_tokens", None)
     temperature = getattr(args, "temperature", None)
     top_p = getattr(args, "top_p", None)
@@ -491,10 +496,16 @@ def _resolve_generation_args(args: argparse.Namespace) -> dict[str, Any]:
             else max_new_tokens
         ),
         "temperature": (
-            DEFAULT_TEMPERATURE if temperature is None else temperature
+            defaults.get("temperature", DEFAULT_TEMPERATURE)
+            if temperature is None
+            else temperature
         ),
-        "top_p": (DEFAULT_TOP_P if top_p is None else top_p),
-        "top_k": (DEFAULT_TOP_K if top_k is None else top_k),
+        "top_p": (
+            defaults.get("top_p", DEFAULT_TOP_P) if top_p is None else top_p
+        ),
+        "top_k": (
+            defaults.get("top_k", DEFAULT_TOP_K) if top_k is None else top_k
+        ),
         "no_chat_template": (
             DEFAULT_NO_CHAT_TEMPLATE
             if no_chat_template is None
@@ -903,7 +914,7 @@ def _start_server(
 
 def run_mlx(text: str, src_lang: str, tgt_lang: str, args: argparse.Namespace) -> str:
     model, tokenizer, translator = _load_model(args.model, args.trust_remote_code)
-    gen_args = _resolve_generation_args(args)
+    gen_args = _resolve_generation_args(args, translator=translator)
     prompt = _build_prompt(
         translator=translator,
         tokenizer=tokenizer,
@@ -1119,15 +1130,9 @@ def _run_server(args: argparse.Namespace) -> int:
     sock.listen(SERVER_LISTEN_BACKLOG)
 
     model_name = args.model or DEFAULT_MLX_MODEL
-    defaults = {
-        "max_new_tokens": args.max_new_tokens,
-        "temperature": args.temperature,
-        "top_p": args.top_p,
-        "top_k": args.top_k,
-        "no_chat_template": args.no_chat_template,
-        "no_repeat_ngram": args.no_repeat_ngram,
-        "no_repeat_window": args.no_repeat_window,
-    }
+    defaults = _resolve_generation_args(
+        args, translator=resolve_translation_model(model_name)
+    )
     model, tokenizer, translator = _load_model(model_name, args.trust_remote_code)
     _write_state(
         state_path,
@@ -1172,15 +1177,9 @@ def _server_start(args: argparse.Namespace) -> int:
     log_path = resolve_log_path(args.log_file)
     state_path = resolve_state_path(None)
     model = args.model or DEFAULT_MLX_MODEL
-    defaults = {
-        "max_new_tokens": args.max_new_tokens,
-        "temperature": args.temperature,
-        "top_p": args.top_p,
-        "top_k": args.top_k,
-        "no_chat_template": args.no_chat_template,
-        "no_repeat_ngram": args.no_repeat_ngram,
-        "no_repeat_window": args.no_repeat_window,
-    }
+    defaults = _resolve_generation_args(
+        args, translator=resolve_translation_model(model)
+    )
 
     status = _get_server_status(socket_path, state_path=state_path)
     if status:
@@ -1232,11 +1231,11 @@ def _server_start(args: argparse.Namespace) -> int:
         state_path=state_path,
         trust_remote_code=args.trust_remote_code,
         verbose=args.verbose,
-        max_new_tokens=args.max_new_tokens,
-        temperature=args.temperature,
-        top_p=args.top_p,
-        top_k=args.top_k,
-        no_chat_template=args.no_chat_template,
+        max_new_tokens=defaults["max_new_tokens"],
+        temperature=defaults["temperature"],
+        top_p=defaults["top_p"],
+        top_k=defaults["top_k"],
+        no_chat_template=defaults["no_chat_template"],
     )
     if not status:
         msg = "Failed to start server."
@@ -1278,13 +1277,9 @@ def _server_stop(args: argparse.Namespace) -> int:
     log_path = resolve_log_path(args.log_file)
     state_path = resolve_state_path(None)
     defaults = {
-        "max_new_tokens": args.max_new_tokens,
-        "temperature": args.temperature,
-        "top_p": args.top_p,
-        "top_k": args.top_k,
-        "no_chat_template": args.no_chat_template,
-        "no_repeat_ngram": args.no_repeat_ngram,
-        "no_repeat_window": args.no_repeat_window,
+        **_resolve_generation_args(
+            args, translator=resolve_translation_model(args.model or DEFAULT_MLX_MODEL)
+        ),
     }
     status = _get_server_status(socket_path, state_path=state_path)
     if not status:
@@ -1446,7 +1441,9 @@ def _translate_text(
         if socket_path.exists() or state_path.exists():
             _cleanup_stale_resources(socket_path, state_path)
 
-        gen_args = _resolve_generation_args(args)
+        gen_args = _resolve_generation_args(
+            args, translator=resolve_translation_model(model)
+        )
         status = _start_server(
             model=model,
             socket_path=socket_path,
@@ -1474,7 +1471,9 @@ def _translate_text(
             return 1
 
     args.model = model
-    gen_args = _resolve_generation_args(args)
+    gen_args = _resolve_generation_args(
+        args, translator=resolve_translation_model(model)
+    )
     model_obj, tokenizer, translator = _load_model(
         args.model, args.trust_remote_code
     )
