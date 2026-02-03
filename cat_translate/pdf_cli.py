@@ -14,7 +14,7 @@ from typing import Iterable, List, Optional, Tuple
 
 from . import cli as cat_cli
 
-DEFAULT_MODEL = "hotchpotch/CAT-Translate-0.8b-mlx-q4"
+DEFAULT_MODEL = "hotchpotch/CAT-Translate-1.4b-mlx-q8"
 DEFAULT_INPUT_LANG = "en"
 DEFAULT_OUTPUT_LANG = "ja"
 DEFAULT_AUTO_TRANSLATE_DIR = Path.home() / "Downloads"

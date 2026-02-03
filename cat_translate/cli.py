@@ -26,10 +26,12 @@ SERVER_MODES = ("auto", "always", "never")
 DEFAULT_SERVER_MODE = "auto"
 DEFAULT_CONFIG_DIR = Path("~/.config/cat-translate").expanduser()
 DEFAULT_MAX_NEW_TOKENS = 4096
-DEFAULT_TEMPERATURE = 0.0
-DEFAULT_TOP_P = 1.0
+DEFAULT_TEMPERATURE = 0.2
+DEFAULT_TOP_P = 0.9
 DEFAULT_TOP_K = 0
 DEFAULT_NO_CHAT_TEMPLATE = False
+DEFAULT_NO_REPEAT_NGRAM = 4
+DEFAULT_NO_REPEAT_WINDOW = 128
 STATUS_TIMEOUT = 120.0
 SERVER_LISTEN_BACKLOG = 16
 TRANSLATE_CONNECT_TIMEOUT = 1.0
@@ -94,6 +96,24 @@ def build_translate_parser() -> argparse.ArgumentParser:
         help=(
             "Maximum number of new tokens to generate "
             f"(default: {DEFAULT_MAX_NEW_TOKENS})."
+        ),
+    )
+    parser.add_argument(
+        "--no-repeat-ngram",
+        type=int,
+        default=None,
+        help=(
+            "Ban repeating n-grams within the recent window "
+            f"(default: {DEFAULT_NO_REPEAT_NGRAM})."
+        ),
+    )
+    parser.add_argument(
+        "--no-repeat-window",
+        type=int,
+        default=None,
+        help=(
+            "Recent token window for no-repeat n-gram "
+            f"(default: {DEFAULT_NO_REPEAT_WINDOW})."
         ),
     )
     parser.add_argument(
@@ -195,7 +215,22 @@ def build_server_parser() -> argparse.ArgumentParser:
         "--max-new-tokens",
         type=int,
         default=DEFAULT_MAX_NEW_TOKENS,
-        help="Maximum number of new tokens to generate.",
+        help=(
+            "Maximum number of new tokens to generate "
+            f"(default: {DEFAULT_MAX_NEW_TOKENS})."
+        ),
+    )
+    parser.add_argument(
+        "--no-repeat-ngram",
+        type=int,
+        default=DEFAULT_NO_REPEAT_NGRAM,
+        help="Ban repeating n-grams within the recent window.",
+    )
+    parser.add_argument(
+        "--no-repeat-window",
+        type=int,
+        default=DEFAULT_NO_REPEAT_WINDOW,
+        help="Recent token window for no-repeat n-gram.",
     )
     parser.add_argument(
         "--temperature",
@@ -449,6 +484,16 @@ def _resolve_generation_args(args: argparse.Namespace) -> dict[str, Any]:
             if args.no_chat_template is None
             else args.no_chat_template
         ),
+        "no_repeat_ngram": (
+            DEFAULT_NO_REPEAT_NGRAM
+            if args.no_repeat_ngram is None
+            else args.no_repeat_ngram
+        ),
+        "no_repeat_window": (
+            DEFAULT_NO_REPEAT_WINDOW
+            if args.no_repeat_window is None
+            else args.no_repeat_window
+        ),
     }
 
 
@@ -464,6 +509,10 @@ def _build_request_overrides(args: argparse.Namespace) -> dict[str, Any]:
         payload["top_k"] = args.top_k
     if args.no_chat_template is not None:
         payload["no_chat_template"] = args.no_chat_template
+    if args.no_repeat_ngram is not None:
+        payload["no_repeat_ngram"] = args.no_repeat_ngram
+    if args.no_repeat_window is not None:
+        payload["no_repeat_window"] = args.no_repeat_window
     return payload
 
 
@@ -477,6 +526,8 @@ def _generate_text(
     top_p: float,
     top_k: int,
     no_chat_template: bool,
+    no_repeat_ngram: int,
+    no_repeat_window: int,
 ) -> str:
     from mlx_lm.generate import generate
     from mlx_lm.sample_utils import make_sampler
@@ -497,6 +548,12 @@ def _generate_text(
     gen_kwargs: dict[str, Any] = {"max_tokens": max_new_tokens}
     if sampler is not None:
         gen_kwargs["sampler"] = sampler
+    logits_processors = _build_logits_processors(
+        no_repeat_ngram=no_repeat_ngram,
+        no_repeat_window=no_repeat_window,
+    )
+    if logits_processors:
+        gen_kwargs["logits_processors"] = logits_processors
     return generate(model, tokenizer, prompt_text, **gen_kwargs)
 
 
@@ -510,6 +567,8 @@ def _stream_text(
     top_p: float,
     top_k: int,
     no_chat_template: bool,
+    no_repeat_ngram: int,
+    no_repeat_window: int,
 ) -> str:
     from mlx_lm.generate import stream_generate
     from mlx_lm.sample_utils import make_sampler
@@ -530,6 +589,12 @@ def _stream_text(
     gen_kwargs: dict[str, Any] = {"max_tokens": max_new_tokens}
     if sampler is not None:
         gen_kwargs["sampler"] = sampler
+    logits_processors = _build_logits_processors(
+        no_repeat_ngram=no_repeat_ngram,
+        no_repeat_window=no_repeat_window,
+    )
+    if logits_processors:
+        gen_kwargs["logits_processors"] = logits_processors
 
     chunks = []
     for response in stream_generate(model, tokenizer, prompt_text, **gen_kwargs):
@@ -589,6 +654,51 @@ def _send_request_with_connect_timeout(
         if not line:
             return None
         return json.loads(line.decode("utf-8"))
+
+
+def _build_logits_processors(
+    *,
+    no_repeat_ngram: int,
+    no_repeat_window: int,
+) -> list[Any]:
+    processors: list[Any] = []
+    if no_repeat_ngram and no_repeat_ngram > 1:
+        processors.append(
+            _make_no_repeat_ngram_processor(
+                ngram_size=no_repeat_ngram,
+                window_size=no_repeat_window,
+            )
+        )
+    return processors
+
+
+def _make_no_repeat_ngram_processor(ngram_size: int, window_size: int):
+    import mlx.core as mx
+
+    ngram_size = int(ngram_size)
+    window_size = int(window_size) if window_size else 0
+
+    def processor(tokens, logits):
+        if len(tokens) < ngram_size:
+            return logits
+        token_list = tokens.tolist()
+        if window_size > 0:
+            token_list = token_list[-window_size:]
+        if len(token_list) < ngram_size:
+            return logits
+        prefix = token_list[-(ngram_size - 1):]
+        banned: set[int] = set()
+        limit = len(token_list) - ngram_size + 1
+        for idx in range(limit):
+            if token_list[idx : idx + ngram_size - 1] == prefix:
+                banned.add(token_list[idx + ngram_size - 1])
+        if not banned:
+            return logits
+        banned_list = list(banned)
+        logits[:, banned_list] = mx.array(-float("inf"), logits.dtype)
+        return logits
+
+    return processor
 
 
 def _read_state(state_path: Path) -> dict[str, Any] | None:
@@ -784,6 +894,8 @@ def run_mlx(prompt: str, args: argparse.Namespace) -> str:
         top_p=gen_args["top_p"],
         top_k=gen_args["top_k"],
         no_chat_template=gen_args["no_chat_template"],
+        no_repeat_ngram=gen_args["no_repeat_ngram"],
+        no_repeat_window=gen_args["no_repeat_window"],
     )
 
 
@@ -835,6 +947,12 @@ def _handle_request(
         temperature = request.get("temperature", defaults["temperature"])
         top_p = request.get("top_p", defaults["top_p"])
         top_k = request.get("top_k", defaults["top_k"])
+        no_repeat_ngram = request.get(
+            "no_repeat_ngram", defaults["no_repeat_ngram"]
+        )
+        no_repeat_window = request.get(
+            "no_repeat_window", defaults["no_repeat_window"]
+        )
         no_chat_template = request.get(
             "no_chat_template", defaults["no_chat_template"]
         )
@@ -849,6 +967,8 @@ def _handle_request(
                 "temperature": float(temperature),
                 "top_p": float(top_p),
                 "top_k": int(top_k),
+                "no_repeat_ngram": int(no_repeat_ngram),
+                "no_repeat_window": int(no_repeat_window),
                 "no_chat_template": bool(no_chat_template),
             },
         )
@@ -863,6 +983,8 @@ def _handle_request(
                 top_p=float(top_p),
                 top_k=int(top_k),
                 no_chat_template=bool(no_chat_template),
+                no_repeat_ngram=int(no_repeat_ngram),
+                no_repeat_window=int(no_repeat_window),
             )
         except Exception as exc:
             duration = time.time() - start_time
@@ -914,7 +1036,7 @@ def _log_snippet(text: str) -> str:
 def _log_server_event(event: str, payload: dict[str, Any]) -> None:
     data = {"event": event, "ts": time.time(), **payload}
     try:
-        sys.stderr.write("[SERVER] " + json.dumps(data) + "\n")
+        sys.stderr.write("[SERVER] " + json.dumps(data, ensure_ascii=False) + "\n")
     except Exception:
         return
 
@@ -949,6 +1071,8 @@ def _run_server(args: argparse.Namespace) -> int:
         "top_p": args.top_p,
         "top_k": args.top_k,
         "no_chat_template": args.no_chat_template,
+        "no_repeat_ngram": args.no_repeat_ngram,
+        "no_repeat_window": args.no_repeat_window,
     }
     loaded = _load_model(model_name, args.trust_remote_code)
     model = loaded[0]
@@ -1001,6 +1125,8 @@ def _server_start(args: argparse.Namespace) -> int:
         "top_p": args.top_p,
         "top_k": args.top_k,
         "no_chat_template": args.no_chat_template,
+        "no_repeat_ngram": args.no_repeat_ngram,
+        "no_repeat_window": args.no_repeat_window,
     }
 
     status = _get_server_status(socket_path, state_path=state_path)
@@ -1104,6 +1230,8 @@ def _server_stop(args: argparse.Namespace) -> int:
         "top_p": args.top_p,
         "top_k": args.top_k,
         "no_chat_template": args.no_chat_template,
+        "no_repeat_ngram": args.no_repeat_ngram,
+        "no_repeat_window": args.no_repeat_window,
     }
     status = _get_server_status(socket_path, state_path=state_path)
     if not status:
@@ -1302,6 +1430,8 @@ def _translate_prompt(prompt: str, args: argparse.Namespace) -> int:
                 top_p=gen_args["top_p"],
                 top_k=gen_args["top_k"],
                 no_chat_template=gen_args["no_chat_template"],
+                no_repeat_ngram=gen_args["no_repeat_ngram"],
+                no_repeat_window=gen_args["no_repeat_window"],
             )
         else:
             translation = _generate_text(
@@ -1313,6 +1443,8 @@ def _translate_prompt(prompt: str, args: argparse.Namespace) -> int:
                 top_p=gen_args["top_p"],
                 top_k=gen_args["top_k"],
                 no_chat_template=gen_args["no_chat_template"],
+                no_repeat_ngram=gen_args["no_repeat_ngram"],
+                no_repeat_window=gen_args["no_repeat_window"],
             )
             print(translation)
     return 0
