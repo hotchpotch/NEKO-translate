@@ -31,6 +31,12 @@ uv tool install neko-translate
 
 でインストールすると、 `neko-translate` と `neko-translate-pdf` コマンドが使えます。
 
+### 更新方法
+
+```bash
+uv tool upgrade neko-translate
+```
+
 ## 使い方
 
 ### 1) cli からの翻訳
