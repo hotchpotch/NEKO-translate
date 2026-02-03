@@ -1,0 +1,29 @@
+[project]
+name = "cat-translate-cli"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+cat-translate = "cat_translate:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["cat_translate"]
+
+[dependency-groups]
+dev = [
+    "fast-langdetect>=1.0.0",
+    "mlx-lm>=0.29.1",
+    "pytest>=9.0.2",
+    "ruff>=0.14.14",
+    "torch>=2.10.0",
+    "tox>=4.34.1",
+    "tox-uv>=1.29.0",
+    "ty>=0.0.14",
+]
