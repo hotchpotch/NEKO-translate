@@ -95,3 +95,7 @@ def test_resolve_model_alias_preserves_input() -> None:
     assert resolve_model_alias("mlx-community/HY-MT1.5-1.8B-8bit", "default") == (
         "mlx-community/HY-MT1.5-1.8B-8bit"
     )
+
+
+def test_resolve_model_alias_hymt() -> None:
+    assert resolve_model_alias("hymt", "default") == "mlx-community/HY-MT1.5-1.8B-4bit"

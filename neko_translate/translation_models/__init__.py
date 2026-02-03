@@ -8,6 +8,7 @@ from .plamo import PlamoTranslateModel
 MODEL_ALIAS_MAP = {
     "plamo": "mlx-community/plamo-2-translate",
     "cat": "hotchpotch/CAT-Translate-1.8b-mlx-q8",
+    "hymt": "mlx-community/HY-MT1.5-1.8B-4bit",
 }
 
 

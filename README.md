@@ -130,6 +130,8 @@ uv run neko-translate-pdf paper.pdf --output-dir ./out
 - `mlx-community/HY-MT1.5-7B-4bit`
 - `mlx-community/HY-MT1.5-7B-8bit`
 
+短いエイリアスも用意しています（例: `hymt`）。
+
 例:
 
 ```bash

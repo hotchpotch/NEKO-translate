@@ -46,6 +46,7 @@ The primary entrypoint is the `neko-translate` command (installed via `uv run`).
   - `mlx-community/HY-MT1.5-1.8B-8bit`
   - `mlx-community/HY-MT1.5-7B-4bit`
   - `mlx-community/HY-MT1.5-7B-8bit`
+  - Aliases: `hymt` -> 1.8B-4bit
 
 ## Notes
 - `neko-translate` supports `--text` or stdin input.

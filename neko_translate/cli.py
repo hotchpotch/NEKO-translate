@@ -111,7 +111,7 @@ def build_translate_parser() -> argparse.ArgumentParser:
         help=(
             "MLX model repo or local directory "
             "(default: hotchpotch/CAT-Translate-0.8b-mlx-q4). "
-            "Aliases: cat, plamo."
+            "Aliases: cat, plamo, hymt."
         ),
     )
     parser.add_argument(
