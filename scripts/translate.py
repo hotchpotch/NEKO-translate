@@ -2,12 +2,11 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 from typing import Any
 
 PROMPT_TEMPLATE = "Translate the following {src_lang} text into {tgt_lang}.\n\n{src_text}"
 DEFAULT_HF_MODEL = "cyberagent/CAT-Translate-1.4b"
-DEFAULT_MLX_MODEL = Path("output/mlx/cyberagent/CAT-Translate-0.8b/q4")
+DEFAULT_MLX_MODEL = "hotchpotch/CAT-Translate-0.8b-mlx-q4"
 LANG_ALIASES = {
     "en": "English",
     "ja": "Japanese",
@@ -32,7 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model",
         default=None,
-        help="Model repo/path. Defaults to HF repo or local MLX path based on backend.",
+        help="Model repo/path. Defaults to HF repo or MLX Hub repo based on backend.",
     )
     parser.add_argument("--src-lang", required=True, help="Source language (e.g., ja/en).")
     parser.add_argument("--tgt-lang", required=True, help="Target language (e.g., en/ja).")
@@ -126,7 +125,7 @@ def run_mlx(prompt: str, args: argparse.Namespace) -> str:
 
     model_path = args.model or DEFAULT_MLX_MODEL
     loaded = load(
-        str(model_path),
+        model_path,
         tokenizer_config={
             "trust_remote_code": True if args.trust_remote_code else None
         },
