@@ -117,7 +117,7 @@ def detect_lang(text: str) -> str:
 
     for item in results_iter:
         lang = item.get("lang")
-        if lang in SUPPORTED_LANGS:
+        if isinstance(lang, str) and lang in SUPPORTED_LANGS:
             return lang
 
     raise SystemExit("Could not detect language as English or Japanese.")
@@ -155,12 +155,14 @@ def run_mlx(prompt: str, args: argparse.Namespace) -> str:
     from mlx_lm.generate import generate
     from mlx_lm.sample_utils import make_sampler
 
-    model, tokenizer = load(
+    loaded = load(
         str(args.model),
         tokenizer_config={
             "trust_remote_code": True if args.trust_remote_code else None
         },
     )
+    model = loaded[0]
+    tokenizer = loaded[1]
 
     messages = [{"role": "user", "content": prompt}]
     if not args.no_chat_template and hasattr(tokenizer, "apply_chat_template"):

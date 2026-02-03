@@ -27,3 +27,21 @@ dev = [
     "tox-uv>=1.29.0",
     "ty>=0.0.14",
 ]
+
+[tool.tox]
+legacy_tox_ini = """
+[tox]
+requires = tox-uv>=1.29.0
+parallel = auto
+parallel_show_output = true
+env_list = py312, lint, type
+
+[testenv]
+commands = uv run pytest {posargs}
+
+[testenv:lint]
+commands = uv run ruff check .
+
+[testenv:type]
+commands = uv run ty check
+"""

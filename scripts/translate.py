@@ -125,12 +125,14 @@ def run_mlx(prompt: str, args: argparse.Namespace) -> str:
     from mlx_lm.sample_utils import make_sampler
 
     model_path = args.model or DEFAULT_MLX_MODEL
-    model, tokenizer = load(
+    loaded = load(
         str(model_path),
         tokenizer_config={
             "trust_remote_code": True if args.trust_remote_code else None
         },
     )
+    model = loaded[0]
+    tokenizer = loaded[1]
 
     messages = [{"role": "user", "content": prompt}]
     if not args.no_chat_template and hasattr(tokenizer, "apply_chat_template"):
