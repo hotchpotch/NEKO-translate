@@ -67,6 +67,10 @@ dev = [
 markers = [
     "integration: runs MLX model integration tests (requires RUN_MLX_INTEGRATION=1)",
 ]
+filterwarnings = [
+    # mlx-lm's dependency emits SWIG deprecation warnings; may disappear on newer mlx-lm.
+    "ignore:builtin type SwigPy.* has no __module__:DeprecationWarning",
+]
 
 [tool.tox]
 legacy_tox_ini = """
