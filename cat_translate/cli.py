@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import contextlib
 import functools
 import json
@@ -1086,8 +1087,8 @@ def _handle_translate(args: argparse.Namespace) -> int:
     return _translate_prompt(prompt, args)
 
 
-def _run_interactive() -> int:
-    args = build_translate_parser().parse_args([])
+def _run_interactive(args: argparse.Namespace) -> int:
+    _setup_readline_history()
     args.stream = True
     if args.verbose:
         sys.stderr.write("[INFO] Interactive mode (type 'exit' to quit).\n")
@@ -1113,10 +1114,22 @@ def _run_interactive() -> int:
     return 0
 
 
+def _setup_readline_history() -> None:
+    try:
+        import readline  # noqa: F401
+    except Exception:
+        return
+
+    try:
+        import readline as _readline  # noqa: F401
+    except Exception:
+        return
+
+
 def main() -> int:
-    if not sys.argv[1:] and sys.stdin.isatty():
-        return _run_interactive()
     mode, args = parse_args()
+    if mode == "translate" and args.text is None and sys.stdin.isatty():
+        return _run_interactive(args)
     if mode == "server":
         action = args.action or "start"
         if action == "run":
