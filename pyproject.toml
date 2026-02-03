@@ -1,7 +1,7 @@
 [project]
 name = "neko-translate"
 version = "0.0.1"
-description = "MLX-based translation CLI for CAT-Translate, PLaMo 2 Translate, and HY-MT."
+description = "MLX-based translation CLI with PDF translation support."
 license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.10"

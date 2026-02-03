@@ -1,29 +1,46 @@
-# NEKO-Translate CLI
+# 🐈 NEKO-translate
 
-Apple Silicon + MLX で日本語/英語の翻訳を回すための小さな CLI です。Hugging Face 上の MLX 量子化モデルを使います。速さ重視なので、常駐サーバーを立てて使うモードも入れました。
+NEKO-translate は、Mac の Apple Silicon に最適化した MLX フレームワークで翻訳を行う CLI アプリです。  
+[mlx-lm](https://github.com/ml-explore/mlx-lm) を使って推論の最適化を行っています。
+
+PDF の見開き翻訳が可能な CLI も同梱しており、論文などの長文を交互に読みたいときに便利です。
+
+![PDF bilingual example](https://github.com/hotchpotch/NEKO-translate/raw/main/assets/pdf_translated_example.jpg)
 
 ## できること
 
-- 日本語 <-> 英語の翻訳（入力を自動判定）
+- 日英翻訳（入力自動判定）
 - モデルによっては多言語翻訳にも対応
-- MLX モデルの自動利用
 - 常駐サーバーで起動コストを削減
 - 対話モード（引数なしで起動すると REPL）
 - ストリーミング出力（対話モードはデフォルト ON）
-- PDF 翻訳（pdf2zh_next + neko-translate）
+- PDF 見開き翻訳（pdf2zh_next + neko-translate）
 
 ## インストール
 
-依存関係は `uv` で管理しています。
+### uv tool（おすすめ）
+
+まず uv を入れてください。  
+https://docs.astral.sh/uv/getting-started/installation/
+
+そのあと:
 
 ```bash
-uv sync
+uv tool install neko-translate
 ```
 
-PyPI から入れる場合:
+これで `neko-translate` と `neko-translate-pdf` コマンドが使えます。
+
+### pip
 
 ```bash
 pip install neko-translate
+```
+
+### 開発用
+
+```bash
+uv sync
 ```
 
 ## 使い方
@@ -31,13 +48,13 @@ pip install neko-translate
 ### 1) ワンショット翻訳
 
 ```bash
-uv run neko-translate --text "こんにちは"
+neko-translate --text "こんにちは"
 ```
 
 言語を明示したい場合:
 
 ```bash
-uv run neko-translate --text "Hello" --input-lang en --output-lang ja
+neko-translate --text "Hello" --input-lang en --output-lang ja
 ```
 
 ### 2) 対話モード
@@ -45,7 +62,7 @@ uv run neko-translate --text "Hello" --input-lang en --output-lang ja
 引数なしで起動すると対話モードになります。
 
 ```bash
-uv run neko-translate
+neko-translate
 ```
 
 ```
@@ -57,7 +74,7 @@ Hello.
 ### 3) ストリーミング出力
 
 ```bash
-uv run neko-translate --stream --server never --text "こんにちは"
+neko-translate --stream --server never --text "こんにちは"
 ```
 
 ストリーミングはサーバー経由では使えません。`--stream` を付けると自動的に直起動に切り替わります。
@@ -67,9 +84,9 @@ uv run neko-translate --stream --server never --text "こんにちは"
 起動コストが気になる場合はサーバーを起動して使ってください。
 
 ```bash
-uv run neko-translate server start
-uv run neko-translate --text "こんにちは"
-uv run neko-translate server stop
+neko-translate server start
+neko-translate --text "こんにちは"
+neko-translate server stop
 ```
 
 サーバーは `~/.config/neko-translate/` にソケットとログを作ります。
@@ -80,7 +97,7 @@ uv run neko-translate server stop
 任意の場所を使いたい場合:
 
 ```bash
-uv run neko-translate server start \
+neko-translate server start \
   --socket ~/.config/neko-translate/test.sock \
   --log-file ~/.config/neko-translate/test.log
 ```
@@ -88,7 +105,7 @@ uv run neko-translate server start \
 状態確認:
 
 ```bash
-uv run neko-translate server status
+neko-translate server status
 ```
 
 ### 5) PDF 翻訳
@@ -96,29 +113,27 @@ uv run neko-translate server status
 pdf2zh_next を使って PDF を丸ごと翻訳します。翻訳は neko-translate サーバー経由です。
 
 ```bash
-uv run neko-translate-pdf paper.pdf
+neko-translate-pdf paper.pdf
 ```
 
 デフォルトは `--input en --output ja` です。自動判定したい場合:
 
 ```bash
-uv run neko-translate-pdf paper.pdf --input auto
+neko-translate-pdf paper.pdf --input auto
 ```
 
 和英:
 
 ```bash
-uv run neko-translate-pdf paper_ja.pdf --input ja --output en
+neko-translate-pdf paper_ja.pdf --input ja --output en
 ```
 
 出力ファイル/ディレクトリを指定:
 
 ```bash
-uv run neko-translate-pdf paper.pdf --output-pdf translated.pdf
-uv run neko-translate-pdf paper.pdf --output-dir ./out
+neko-translate-pdf paper.pdf --output-pdf translated.pdf
+neko-translate-pdf paper.pdf --output-dir ./out
 ```
-
-サーバーは 1.4b q8 がデフォルトで、別モデルが動いていたら自動的に停止して起動し直します。
 
 ## モデル
 
@@ -153,32 +168,16 @@ uv run neko-translate-pdf paper.pdf --output-dir ./out
 | [PLaMo 2 Translate](https://huggingface.co/pfnet/plamo-2-translate) | `mlx-community/plamo-2-translate` | [PLaMo Community License](https://plamo.preferredai.jp/info/plamo-community-license-ja) |
 | [HY-MT 1.5](https://github.com/Tencent-Hunyuan/HY-MT) | `mlx-community/HY-MT1.5-1.8B-4bit` / `mlx-community/HY-MT1.5-1.8B-8bit` / `mlx-community/HY-MT1.5-7B-4bit` / `mlx-community/HY-MT1.5-7B-8bit` | [HY-MT License](https://github.com/Tencent-Hunyuan/HY-MT/blob/main/License.txt) |
 
-例:
-
-```bash
-uv run neko-translate --model hotchpotch/CAT-Translate-1.4b-mlx-q8 --text "こんにちは"
-```
-
-PDF 翻訳 (`neko-translate-pdf`) のデフォルトは以下です。
-
-- `hotchpotch/CAT-Translate-1.4b-mlx-q8`
-
-HY-MT 系を使いたい場合は `--model` で指定してください。例:
-
-```bash
-uv run neko-translate --model mlx-community/HY-MT1.5-1.8B-8bit --text "Hello"
-```
-
 ## オプション
 
 主要なものだけ。
 
-- `--input-lang` / `--output-lang` : en / ja
-- `--max-new-tokens` : 既定 4096
-- `--temperature` / `--top-p` / `--top-k` : サンプリング設定
+- `--input-lang` / `--output-lang`
+- `--max-new-tokens`
+- `--temperature` / `--top-p` / `--top-k`
 - `--server` : `auto` / `always` / `never`
-- `--socket` / `--log-file` : サーバー用
-- `--verbose` : どの経路を使ったか表示
+- `--socket` / `--log-file`
+- `--verbose`
 
 ## 開発
 
@@ -197,3 +196,11 @@ uv run tox
 ```bash
 uv run --no-sync neko-translate --text "こんにちは"
 ```
+
+## ライセンス
+
+- ソースコード: MIT
+
+## Author
+
+- Yuichi Tateno (@hotchpotch)
