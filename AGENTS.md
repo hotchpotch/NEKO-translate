@@ -7,6 +7,11 @@ The primary entrypoint is the `cat-translate` command (installed via `uv run`).
 ## Development Workflow
 - Install deps: `uv sync` (or `uv add --dev ...` when adding dev tools)
 - Run CLI: `uv run cat-translate --text "Hello" --input-lang en --output-lang ja`
+- Server mode:
+  - Start: `uv run cat-translate server start`
+  - Status: `uv run cat-translate server status`
+  - Stop: `uv run cat-translate server stop`
+  - Use server automatically: `uv run cat-translate --server auto`
 - Run tests + lint + typecheck: `uv run tox` (includes MLX integration tests)
   - Lint only: `uv run ruff check .`
   - Typecheck only: `uv run ty check`

@@ -4,14 +4,24 @@ from __future__ import annotations
 import argparse
 import contextlib
 import functools
+import json
 import os
+import socket
+import subprocess
 import sys
 import tempfile
+import time
 import warnings
+from pathlib import Path
 from typing import Any, Iterable, Iterator
 
 PROMPT_TEMPLATE = "Translate the following {src_lang} text into {tgt_lang}.\n\n{src_text}"
 DEFAULT_MLX_MODEL = "hotchpotch/CAT-Translate-0.8b-mlx-q4"
+DEFAULT_SOCKET_NAME = "cat-translate.sock"
+DEFAULT_LOG_NAME = "server.log"
+SERVER_MODES = ("auto", "always", "never")
+DEFAULT_SERVER_MODE = "auto"
+DEFAULT_CONFIG_DIR = Path("~/.config/cat-translate").expanduser()
 LANG_CODE_MAP = {
     "ja": "ja",
     "jp": "ja",
@@ -28,7 +38,7 @@ LANG_NAME_MAP = {
 SUPPORTED_LANGS = {"ja", "en"}
 
 
-def parse_args() -> argparse.Namespace:
+def build_translate_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Translate with CAT-Translate (MLX only).",
     )
@@ -88,11 +98,89 @@ def parse_args() -> argparse.Namespace:
         help="Disable chat template even if the tokenizer provides one.",
     )
     parser.add_argument(
+        "--server",
+        choices=SERVER_MODES,
+        default=DEFAULT_SERVER_MODE,
+        help="Server usage: auto (default), always, or never.",
+    )
+    parser.add_argument(
+        "--socket",
+        type=str,
+        default=None,
+        help="Unix domain socket path (default: ~/.config/cat-translate/cat-translate.sock).",
+    )
+    parser.add_argument(
+        "--log-file",
+        type=str,
+        default=None,
+        help="Server log file path (default: ~/.config/cat-translate/server.log).",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable verbose logging and download progress output.",
     )
-    return parser.parse_args()
+    return parser
+
+
+SERVER_ACTIONS = ("start", "stop", "status", "run")
+
+
+def build_server_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Manage CAT-Translate MLX server. Actions: start, stop, status, run."
+        ),
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=DEFAULT_MLX_MODEL,
+        help=(
+            "MLX model repo or local directory "
+            "(default: hotchpotch/CAT-Translate-0.8b-mlx-q4)."
+        ),
+    )
+    parser.add_argument(
+        "--socket",
+        type=str,
+        default=None,
+        help="Unix domain socket path (default: ~/.config/cat-translate/cat-translate.sock).",
+    )
+    parser.add_argument(
+        "--log-file",
+        type=str,
+        default=None,
+        help="Server log file path (default: ~/.config/cat-translate/server.log).",
+    )
+    parser.add_argument(
+        "--trust-remote-code",
+        action="store_true",
+        help="Trust remote code when loading tokenizers.",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging.",
+    )
+
+    return parser
+
+
+def parse_args(argv: list[str] | None = None) -> tuple[str, argparse.Namespace]:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "server":
+        action = None
+        rest = argv[1:]
+        if rest and rest[0] in SERVER_ACTIONS:
+            action = rest[0]
+            rest = rest[1:]
+        parser = build_server_parser()
+        args = parser.parse_args(rest)
+        args.action = action
+        return "server", args
+    parser = build_translate_parser()
+    return "translate", parser.parse_args(argv)
 
 
 def read_text(args: argparse.Namespace) -> str:
@@ -220,57 +308,461 @@ def silence_stderr(enabled: bool) -> Iterator[None]:
         os.close(original_fd)
 
 
-def run_mlx(prompt: str, args: argparse.Namespace) -> str:
-    from mlx_lm.generate import generate
-    from mlx_lm.sample_utils import make_sampler
+def ensure_directory(path: Path, mode: int = 0o700) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(path, mode)
+    except OSError:
+        pass
 
-    loaded = _load_model(args.model, args.trust_remote_code)
-    model = loaded[0]
-    tokenizer = loaded[1]
 
-    messages = [{"role": "user", "content": prompt}]
-    if not args.no_chat_template and hasattr(tokenizer, "apply_chat_template"):
-        prompt_text = tokenizer.apply_chat_template(
+def resolve_socket_path(value: str | None) -> Path:
+    if value:
+        return Path(value).expanduser()
+    env = os.environ.get("CAT_TRANSLATE_SOCKET")
+    if env:
+        return Path(env).expanduser()
+    return DEFAULT_CONFIG_DIR / DEFAULT_SOCKET_NAME
+
+
+def resolve_log_path(value: str | None) -> Path:
+    if value:
+        return Path(value).expanduser()
+    env = os.environ.get("CAT_TRANSLATE_LOG")
+    if env:
+        return Path(env).expanduser()
+    return DEFAULT_CONFIG_DIR / DEFAULT_LOG_NAME
+
+
+def _prepare_prompt(tokenizer: Any, prompt: str, no_chat_template: bool) -> str:
+    if not no_chat_template and hasattr(tokenizer, "apply_chat_template"):
+        messages = [{"role": "user", "content": prompt}]
+        return tokenizer.apply_chat_template(
             messages,
             add_generation_prompt=True,
             tokenize=False,
         )
-    else:
-        prompt_text = prompt
+    return prompt
 
+
+def _generate_text(
+    model: Any,
+    tokenizer: Any,
+    prompt: str,
+    *,
+    max_new_tokens: int,
+    temperature: float,
+    top_p: float,
+    top_k: int,
+    no_chat_template: bool,
+) -> str:
+    from mlx_lm.generate import generate
+    from mlx_lm.sample_utils import make_sampler
+
+    prompt_text = _prepare_prompt(tokenizer, prompt, no_chat_template)
     sampler = None
-    if (args.temperature and args.temperature > 0) or (
-        args.top_p and args.top_p < 1.0
-    ) or (args.top_k and args.top_k > 0):
+    if (
+        (temperature and temperature > 0)
+        or (top_p and top_p < 1.0)
+        or (top_k and top_k > 0)
+    ):
         sampler = make_sampler(
-            temp=args.temperature,
-            top_p=args.top_p,
-            top_k=args.top_k,
+            temp=temperature,
+            top_p=top_p,
+            top_k=top_k,
         )
 
-    gen_kwargs: dict[str, Any] = {"max_tokens": args.max_new_tokens}
+    gen_kwargs: dict[str, Any] = {"max_tokens": max_new_tokens}
     if sampler is not None:
         gen_kwargs["sampler"] = sampler
-
     return generate(model, tokenizer, prompt_text, **gen_kwargs)
 
 
-def main() -> int:
-    args = parse_args()
+def _send_request(
+    socket_path: Path, payload: dict[str, Any], timeout: float | None = None
+) -> dict[str, Any] | None:
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        if timeout is not None:
+            sock.settimeout(timeout)
+        sock.connect(str(socket_path))
+    except OSError:
+        return None
+
+    with sock:
+        try:
+            file = sock.makefile("rwb")
+            data = json.dumps(payload).encode("utf-8") + b"\n"
+            file.write(data)
+            file.flush()
+            line = file.readline()
+        except (OSError, TimeoutError):
+            return None
+        if not line:
+            return None
+        return json.loads(line.decode("utf-8"))
+
+
+def _get_server_status(socket_path: Path) -> dict[str, Any] | None:
+    response = _send_request(socket_path, {"type": "status"}, timeout=1.0)
+    if not response or not response.get("ok"):
+        return None
+    return response
+
+
+def _remove_stale_socket(socket_path: Path) -> None:
+    try:
+        socket_path.unlink()
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+
+
+def _wait_for_server(socket_path: Path, timeout: float = 60.0) -> dict[str, Any] | None:
+    start = time.time()
+    while time.time() - start < timeout:
+        status = _get_server_status(socket_path)
+        if status:
+            return status
+        time.sleep(0.2)
+    return None
+
+
+def _start_server(
+    *,
+    model: str,
+    socket_path: Path,
+    log_path: Path,
+    trust_remote_code: bool,
+    verbose: bool,
+) -> dict[str, Any] | None:
+    ensure_directory(socket_path.parent)
+    ensure_directory(log_path.parent)
+    if socket_path.exists():
+        status = _get_server_status(socket_path)
+        if status:
+            return status
+        _remove_stale_socket(socket_path)
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "cat_translate.cli",
+        "server",
+        "run",
+        "--model",
+        model,
+        "--socket",
+        str(socket_path),
+        "--log-file",
+        str(log_path),
+    ]
+    if trust_remote_code:
+        cmd.append("--trust-remote-code")
+    if verbose:
+        sys.stderr.write(f"[INFO] Starting server: {' '.join(cmd)}\n")
+
+    with open(log_path, "a", encoding="utf-8") as log_file:
+        subprocess.Popen(
+            cmd,
+            stdout=log_file,
+            stderr=log_file,
+            start_new_session=True,
+        )
+
+    return _wait_for_server(socket_path)
+
+
+def run_mlx(prompt: str, args: argparse.Namespace) -> str:
+    loaded = _load_model(args.model, args.trust_remote_code)
+    model = loaded[0]
+    tokenizer = loaded[1]
+    return _generate_text(
+        model,
+        tokenizer,
+        prompt,
+        max_new_tokens=args.max_new_tokens,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        top_k=args.top_k,
+        no_chat_template=args.no_chat_template,
+    )
+
+
+def _handle_request(
+    conn: socket.socket,
+    *,
+    model: Any,
+    tokenizer: Any,
+    model_name: str,
+) -> bool:
+    file = conn.makefile("rwb")
+    line = file.readline()
+    if not line:
+        return False
+    try:
+        request = json.loads(line.decode("utf-8"))
+    except json.JSONDecodeError:
+        response = {"ok": False, "error": "invalid_json"}
+        _write_response(file, response)
+        return False
+
+    req_type = request.get("type")
+    if req_type == "status":
+        response = {"ok": True, "pid": os.getpid(), "model": model_name}
+        _write_response(file, response)
+        return False
+
+    if req_type == "stop":
+        response = {"ok": True}
+        _write_response(file, response)
+        return True
+
+    if req_type == "translate":
+        prompt = request.get("prompt", "")
+        response = {
+            "ok": True,
+            "text": _generate_text(
+                model,
+                tokenizer,
+                prompt,
+                max_new_tokens=int(request.get("max_new_tokens", 512)),
+                temperature=float(request.get("temperature", 0.0)),
+                top_p=float(request.get("top_p", 1.0)),
+                top_k=int(request.get("top_k", 0)),
+                no_chat_template=bool(request.get("no_chat_template", False)),
+            ),
+        }
+        _write_response(file, response)
+        return False
+
+    response = {"ok": False, "error": "unknown_request"}
+    _write_response(file, response)
+    return False
+
+
+def _write_response(file: Any, response: dict[str, Any]) -> None:
+    try:
+        file.write(json.dumps(response).encode("utf-8") + b"\n")
+        file.flush()
+    except (BrokenPipeError, OSError):
+        return
+
+
+def _run_server(args: argparse.Namespace) -> int:
+    configure_logging(args.verbose)
+    socket_path = resolve_socket_path(args.socket)
+    log_path = resolve_log_path(args.log_file)
+    ensure_directory(socket_path.parent)
+    ensure_directory(log_path.parent)
+
+    if socket_path.exists():
+        status = _get_server_status(socket_path)
+        if status:
+            sys.stderr.write(
+                f"[INFO] Server already running (model={status['model']}).\n"
+            )
+            return 0
+        _remove_stale_socket(socket_path)
+
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.bind(str(socket_path))
+    os.chmod(socket_path, 0o600)
+    sock.listen(1)
+
+    model_name = args.model or DEFAULT_MLX_MODEL
+    loaded = _load_model(model_name, args.trust_remote_code)
+    model = loaded[0]
+    tokenizer = loaded[1]
+
+    try:
+        should_stop = False
+        while not should_stop:
+            conn, _ = sock.accept()
+            with conn:
+                should_stop = _handle_request(
+                    conn,
+                    model=model,
+                    tokenizer=tokenizer,
+                    model_name=model_name,
+                )
+    finally:
+        sock.close()
+        _remove_stale_socket(socket_path)
+    return 0
+
+
+def _server_start(args: argparse.Namespace) -> int:
+    socket_path = resolve_socket_path(args.socket)
+    log_path = resolve_log_path(args.log_file)
+    model = args.model or DEFAULT_MLX_MODEL
+
+    status = _get_server_status(socket_path)
+    if status:
+        if status.get("model") != model:
+            sys.stderr.write(
+                f"Server already running with model {status['model']}. "
+                "Stop it before starting a different model.\n"
+            )
+            return 1
+        if args.verbose:
+            sys.stderr.write(
+                f"[INFO] Server already running (model={status['model']}).\n"
+            )
+        return 0
+
+    status = _start_server(
+        model=model,
+        socket_path=socket_path,
+        log_path=log_path,
+        trust_remote_code=args.trust_remote_code,
+        verbose=args.verbose,
+    )
+    if not status:
+        sys.stderr.write("Failed to start server.\n")
+        return 1
+    if args.verbose:
+        sys.stderr.write(
+            f"[INFO] Server started (model={status['model']}, socket={socket_path}).\n"
+        )
+    return 0
+
+
+def _server_stop(args: argparse.Namespace) -> int:
+    socket_path = resolve_socket_path(args.socket)
+    status = _get_server_status(socket_path)
+    if not status:
+        if socket_path.exists():
+            _remove_stale_socket(socket_path)
+        if args.verbose:
+            sys.stderr.write("[INFO] No running server found.\n")
+        return 0
+
+    response = _send_request(socket_path, {"type": "stop"}, timeout=2.0)
+    if not response or not response.get("ok"):
+        sys.stderr.write("Failed to stop server.\n")
+        return 1
+    _wait_for_server(socket_path, timeout=2.0)
+    if args.verbose:
+        sys.stderr.write("[INFO] Server stopped.\n")
+    return 0
+
+
+def _server_status(args: argparse.Namespace) -> int:
+    socket_path = resolve_socket_path(args.socket)
+    status = _get_server_status(socket_path)
+    if not status:
+        print("stopped")
+        return 0
+    print(
+        json.dumps(
+            {
+                "status": "running",
+                "pid": status.get("pid"),
+                "model": status.get("model"),
+                "socket": str(socket_path),
+            }
+        )
+    )
+    return 0
+
+
+def _translate_via_server(args: argparse.Namespace, prompt: str) -> str | None:
+    socket_path = resolve_socket_path(args.socket)
+    response = _send_request(
+        socket_path,
+        {
+            "type": "translate",
+            "prompt": prompt,
+            "max_new_tokens": args.max_new_tokens,
+            "temperature": args.temperature,
+            "top_p": args.top_p,
+            "top_k": args.top_k,
+            "no_chat_template": args.no_chat_template,
+        },
+    )
+    if not response or not response.get("ok"):
+        return None
+    return str(response.get("text", ""))
+
+
+def _handle_translate(args: argparse.Namespace) -> int:
     configure_logging(args.verbose)
     text = read_text(args)
     input_lang, output_lang = resolve_languages(args, text)
-
     prompt = PROMPT_TEMPLATE.format(
         src_lang=LANG_NAME_MAP[input_lang],
         tgt_lang=LANG_NAME_MAP[output_lang],
         src_text=text,
     )
 
+    server_mode = args.server
+    socket_path = resolve_socket_path(args.socket)
+    model = args.model or DEFAULT_MLX_MODEL
+
+    if server_mode != "never":
+        status = _get_server_status(socket_path)
+        if status:
+            if args.model is not None and status.get("model") != args.model:
+                sys.stderr.write(
+                    f"Server already running with model {status['model']}. "
+                    "Stop it before using a different model.\n"
+                )
+                return 1
+            if args.verbose:
+                sys.stderr.write(f"[INFO] Using server at {socket_path}\n")
+            translation = _translate_via_server(args, prompt)
+            if translation is None:
+                sys.stderr.write("Server failed to translate.\n")
+                return 1
+            print(translation)
+            return 0
+
+        if socket_path.exists():
+            _remove_stale_socket(socket_path)
+
+        status = _start_server(
+            model=model,
+            socket_path=socket_path,
+            log_path=resolve_log_path(args.log_file),
+            trust_remote_code=args.trust_remote_code,
+            verbose=args.verbose,
+        )
+        if status:
+            if args.verbose:
+                sys.stderr.write(f"[INFO] Started server at {socket_path}\n")
+            translation = _translate_via_server(args, prompt)
+            if translation is None:
+                sys.stderr.write("Server failed to translate.\n")
+                return 1
+            print(translation)
+            return 0
+        if server_mode == "always":
+            sys.stderr.write("Failed to start server.\n")
+            return 1
+
+    args.model = model
     with silence_stderr(not args.verbose):
         translation = run_mlx(prompt, args)
     print(translation)
     return 0
+
+
+def main() -> int:
+    mode, args = parse_args()
+    if mode == "server":
+        action = args.action or "start"
+        if action == "run":
+            return _run_server(args)
+        if action == "start":
+            return _server_start(args)
+        if action == "stop":
+            return _server_stop(args)
+        if action == "status":
+            return _server_status(args)
+        raise SystemExit(f"Unknown server action: {action}")
+    return _handle_translate(args)
 
 
 if __name__ == "__main__":
