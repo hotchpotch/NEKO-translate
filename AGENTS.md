@@ -7,7 +7,7 @@ The primary entrypoint is the `cat-translate` command (installed via `uv run`).
 ## Development Workflow
 - Install deps: `uv sync` (or `uv add --dev ...` when adding dev tools)
 - Run CLI: `uv run cat-translate --text "Hello" --input-lang en --output-lang ja`
-- Run tests + lint + typecheck: `uv run tox`
+- Run tests + lint + typecheck: `uv run tox` (includes MLX integration tests)
   - Lint only: `uv run ruff check .`
   - Typecheck only: `uv run ty check`
   - Tests only: `uv run pytest`

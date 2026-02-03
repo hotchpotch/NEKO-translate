@@ -42,6 +42,8 @@ parallel_show_output = true
 env_list = py312, lint, type
 
 [testenv]
+setenv =
+    RUN_MLX_INTEGRATION = 1
 commands = uv run pytest {posargs}
 
 [testenv:lint]
