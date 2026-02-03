@@ -7,6 +7,8 @@ The primary entrypoint is the `cat-translate` command (installed via `uv run`).
 ## Development Workflow
 - Install deps: `uv sync` (or `uv add --dev ...` when adding dev tools)
 - Run CLI: `uv run cat-translate --text "Hello" --input-lang en --output-lang ja`
+- Interactive (default when no args + tty): `uv run cat-translate`
+- Streaming (one-shot): `uv run cat-translate --stream --server never --text "こんにちは"`
 - Server mode:
   - Start: `uv run cat-translate server start`
   - Status: `uv run cat-translate server status`

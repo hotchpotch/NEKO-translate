@@ -39,6 +39,6 @@ def test_translate_with_remote_mlx_model() -> None:
     for output in (translation, translation_second):
         assert output
         assert any(
-        "\u3040" <= ch <= "\u30ff" or "\u4e00" <= ch <= "\u9fff"
-        for ch in output
-    )
+            "\u3040" <= ch <= "\u30ff" or "\u4e00" <= ch <= "\u9fff"
+            for ch in output
+        )

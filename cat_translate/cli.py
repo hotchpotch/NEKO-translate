@@ -22,6 +22,11 @@ DEFAULT_LOG_NAME = "server.log"
 SERVER_MODES = ("auto", "always", "never")
 DEFAULT_SERVER_MODE = "auto"
 DEFAULT_CONFIG_DIR = Path("~/.config/cat-translate").expanduser()
+DEFAULT_MAX_NEW_TOKENS = 4096
+DEFAULT_TEMPERATURE = 0.0
+DEFAULT_TOP_P = 1.0
+DEFAULT_TOP_K = 0
+DEFAULT_NO_CHAT_TEMPLATE = False
 LANG_CODE_MAP = {
     "ja": "ja",
     "jp": "ja",
@@ -41,6 +46,15 @@ SUPPORTED_LANGS = {"ja", "en"}
 def build_translate_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Translate with CAT-Translate (MLX only).",
+        epilog=(
+            "Server commands:\n"
+            "  cat-translate server start\n"
+            "  cat-translate server stop\n"
+            "  cat-translate server status\n"
+            "  cat-translate server run\n"
+            "Use --socket/--log-file to control server paths."
+        ),
+        formatter_class=argparse.RawTextHelpFormatter,
     )
     parser.add_argument(
         "--model",
@@ -66,25 +80,28 @@ def build_translate_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-new-tokens",
         type=int,
-        default=512,
-        help="Maximum number of new tokens to generate.",
+        default=None,
+        help=(
+            "Maximum number of new tokens to generate "
+            f"(default: {DEFAULT_MAX_NEW_TOKENS})."
+        ),
     )
     parser.add_argument(
         "--temperature",
         type=float,
-        default=0.0,
+        default=None,
         help="Sampling temperature. 0 disables sampling.",
     )
     parser.add_argument(
         "--top-p",
         type=float,
-        default=1.0,
+        default=None,
         help="Top-p sampling value.",
     )
     parser.add_argument(
         "--top-k",
         type=int,
-        default=0,
+        default=None,
         help="Top-k sampling value.",
     )
     parser.add_argument(
@@ -95,6 +112,7 @@ def build_translate_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-chat-template",
         action="store_true",
+        default=None,
         help="Disable chat template even if the tokenizer provides one.",
     )
     parser.add_argument(
@@ -119,6 +137,11 @@ def build_translate_parser() -> argparse.ArgumentParser:
         "--verbose",
         action="store_true",
         help="Enable verbose logging and download progress output.",
+    )
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        help="Stream output tokens (default: off outside interactive mode).",
     )
     return parser
 
@@ -157,6 +180,35 @@ def build_server_parser() -> argparse.ArgumentParser:
         "--trust-remote-code",
         action="store_true",
         help="Trust remote code when loading tokenizers.",
+    )
+    parser.add_argument(
+        "--max-new-tokens",
+        type=int,
+        default=DEFAULT_MAX_NEW_TOKENS,
+        help="Maximum number of new tokens to generate.",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=DEFAULT_TEMPERATURE,
+        help="Sampling temperature. 0 disables sampling.",
+    )
+    parser.add_argument(
+        "--top-p",
+        type=float,
+        default=DEFAULT_TOP_P,
+        help="Top-p sampling value.",
+    )
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=DEFAULT_TOP_K,
+        help="Top-k sampling value.",
+    )
+    parser.add_argument(
+        "--no-chat-template",
+        action="store_true",
+        help="Disable chat template even if the tokenizer provides one.",
     )
     parser.add_argument(
         "--verbose",
@@ -345,6 +397,41 @@ def _prepare_prompt(tokenizer: Any, prompt: str, no_chat_template: bool) -> str:
     return prompt
 
 
+def _resolve_generation_args(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "max_new_tokens": (
+            DEFAULT_MAX_NEW_TOKENS
+            if args.max_new_tokens is None
+            else args.max_new_tokens
+        ),
+        "temperature": (
+            DEFAULT_TEMPERATURE if args.temperature is None else args.temperature
+        ),
+        "top_p": (DEFAULT_TOP_P if args.top_p is None else args.top_p),
+        "top_k": (DEFAULT_TOP_K if args.top_k is None else args.top_k),
+        "no_chat_template": (
+            DEFAULT_NO_CHAT_TEMPLATE
+            if args.no_chat_template is None
+            else args.no_chat_template
+        ),
+    }
+
+
+def _build_request_overrides(args: argparse.Namespace) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    if args.max_new_tokens is not None:
+        payload["max_new_tokens"] = args.max_new_tokens
+    if args.temperature is not None:
+        payload["temperature"] = args.temperature
+    if args.top_p is not None:
+        payload["top_p"] = args.top_p
+    if args.top_k is not None:
+        payload["top_k"] = args.top_k
+    if args.no_chat_template is not None:
+        payload["no_chat_template"] = args.no_chat_template
+    return payload
+
+
 def _generate_text(
     model: Any,
     tokenizer: Any,
@@ -376,6 +463,47 @@ def _generate_text(
     if sampler is not None:
         gen_kwargs["sampler"] = sampler
     return generate(model, tokenizer, prompt_text, **gen_kwargs)
+
+
+def _stream_text(
+    model: Any,
+    tokenizer: Any,
+    prompt: str,
+    *,
+    max_new_tokens: int,
+    temperature: float,
+    top_p: float,
+    top_k: int,
+    no_chat_template: bool,
+) -> str:
+    from mlx_lm.generate import stream_generate
+    from mlx_lm.sample_utils import make_sampler
+
+    prompt_text = _prepare_prompt(tokenizer, prompt, no_chat_template)
+    sampler = None
+    if (
+        (temperature and temperature > 0)
+        or (top_p and top_p < 1.0)
+        or (top_k and top_k > 0)
+    ):
+        sampler = make_sampler(
+            temp=temperature,
+            top_p=top_p,
+            top_k=top_k,
+        )
+
+    gen_kwargs: dict[str, Any] = {"max_tokens": max_new_tokens}
+    if sampler is not None:
+        gen_kwargs["sampler"] = sampler
+
+    chunks = []
+    for response in stream_generate(model, tokenizer, prompt_text, **gen_kwargs):
+        if response.text:
+            print(response.text, end="", flush=True)
+            chunks.append(response.text)
+    if chunks:
+        print()
+    return "".join(chunks)
 
 
 def _send_request(
@@ -436,6 +564,11 @@ def _start_server(
     log_path: Path,
     trust_remote_code: bool,
     verbose: bool,
+    max_new_tokens: int,
+    temperature: float,
+    top_p: float,
+    top_k: int,
+    no_chat_template: bool,
 ) -> dict[str, Any] | None:
     ensure_directory(socket_path.parent)
     ensure_directory(log_path.parent)
@@ -457,7 +590,17 @@ def _start_server(
         str(socket_path),
         "--log-file",
         str(log_path),
+        "--max-new-tokens",
+        str(max_new_tokens),
+        "--temperature",
+        str(temperature),
+        "--top-p",
+        str(top_p),
+        "--top-k",
+        str(top_k),
     ]
+    if no_chat_template:
+        cmd.append("--no-chat-template")
     if trust_remote_code:
         cmd.append("--trust-remote-code")
     if verbose:
@@ -478,15 +621,16 @@ def run_mlx(prompt: str, args: argparse.Namespace) -> str:
     loaded = _load_model(args.model, args.trust_remote_code)
     model = loaded[0]
     tokenizer = loaded[1]
+    gen_args = _resolve_generation_args(args)
     return _generate_text(
         model,
         tokenizer,
         prompt,
-        max_new_tokens=args.max_new_tokens,
-        temperature=args.temperature,
-        top_p=args.top_p,
-        top_k=args.top_k,
-        no_chat_template=args.no_chat_template,
+        max_new_tokens=gen_args["max_new_tokens"],
+        temperature=gen_args["temperature"],
+        top_p=gen_args["top_p"],
+        top_k=gen_args["top_k"],
+        no_chat_template=gen_args["no_chat_template"],
     )
 
 
@@ -496,6 +640,7 @@ def _handle_request(
     model: Any,
     tokenizer: Any,
     model_name: str,
+    defaults: dict[str, Any],
 ) -> bool:
     file = conn.makefile("rwb")
     line = file.readline()
@@ -510,7 +655,12 @@ def _handle_request(
 
     req_type = request.get("type")
     if req_type == "status":
-        response = {"ok": True, "pid": os.getpid(), "model": model_name}
+        response = {
+            "ok": True,
+            "pid": os.getpid(),
+            "model": model_name,
+            "defaults": defaults,
+        }
         _write_response(file, response)
         return False
 
@@ -521,17 +671,24 @@ def _handle_request(
 
     if req_type == "translate":
         prompt = request.get("prompt", "")
+        max_new_tokens = request.get("max_new_tokens", defaults["max_new_tokens"])
+        temperature = request.get("temperature", defaults["temperature"])
+        top_p = request.get("top_p", defaults["top_p"])
+        top_k = request.get("top_k", defaults["top_k"])
+        no_chat_template = request.get(
+            "no_chat_template", defaults["no_chat_template"]
+        )
         response = {
             "ok": True,
             "text": _generate_text(
                 model,
                 tokenizer,
                 prompt,
-                max_new_tokens=int(request.get("max_new_tokens", 512)),
-                temperature=float(request.get("temperature", 0.0)),
-                top_p=float(request.get("top_p", 1.0)),
-                top_k=int(request.get("top_k", 0)),
-                no_chat_template=bool(request.get("no_chat_template", False)),
+                max_new_tokens=int(max_new_tokens),
+                temperature=float(temperature),
+                top_p=float(top_p),
+                top_k=int(top_k),
+                no_chat_template=bool(no_chat_template),
             ),
         }
         _write_response(file, response)
@@ -572,9 +729,21 @@ def _run_server(args: argparse.Namespace) -> int:
     sock.listen(1)
 
     model_name = args.model or DEFAULT_MLX_MODEL
+    defaults = {
+        "max_new_tokens": args.max_new_tokens,
+        "temperature": args.temperature,
+        "top_p": args.top_p,
+        "top_k": args.top_k,
+        "no_chat_template": args.no_chat_template,
+    }
     loaded = _load_model(model_name, args.trust_remote_code)
     model = loaded[0]
     tokenizer = loaded[1]
+    sys.stderr.write(
+        "[INFO] Server defaults: "
+        + json.dumps({"model": model_name, "defaults": defaults})
+        + "\n"
+    )
 
     try:
         should_stop = False
@@ -586,6 +755,7 @@ def _run_server(args: argparse.Namespace) -> int:
                     model=model,
                     tokenizer=tokenizer,
                     model_name=model_name,
+                    defaults=defaults,
                 )
     finally:
         sock.close()
@@ -597,19 +767,55 @@ def _server_start(args: argparse.Namespace) -> int:
     socket_path = resolve_socket_path(args.socket)
     log_path = resolve_log_path(args.log_file)
     model = args.model or DEFAULT_MLX_MODEL
+    defaults = {
+        "max_new_tokens": args.max_new_tokens,
+        "temperature": args.temperature,
+        "top_p": args.top_p,
+        "top_k": args.top_k,
+        "no_chat_template": args.no_chat_template,
+    }
 
     status = _get_server_status(socket_path)
     if status:
         if status.get("model") != model:
-            sys.stderr.write(
+            msg = (
                 f"Server already running with model {status['model']}. "
-                "Stop it before starting a different model.\n"
+                "Stop it before starting a different model."
+            )
+            sys.stderr.write(msg + "\n")
+            print(
+                json.dumps(
+                    {
+                        "status": "error",
+                        "message": msg,
+                        "pid": status.get("pid"),
+                        "model": status.get("model"),
+                        "socket": str(socket_path),
+                        "log": str(log_path),
+                        "defaults": status.get("defaults"),
+                    },
+                    indent=2,
+                )
             )
             return 1
         if args.verbose:
             sys.stderr.write(
                 f"[INFO] Server already running (model={status['model']}).\n"
             )
+        print(
+            json.dumps(
+                {
+                    "status": "running",
+                    "pid": status.get("pid"),
+                    "model": status.get("model"),
+                    "socket": str(socket_path),
+                    "log": str(log_path),
+                    "message": "already running",
+                    "defaults": status.get("defaults"),
+                },
+                indent=2,
+            )
+        )
         return 0
 
     status = _start_server(
@@ -618,42 +824,131 @@ def _server_start(args: argparse.Namespace) -> int:
         log_path=log_path,
         trust_remote_code=args.trust_remote_code,
         verbose=args.verbose,
+        max_new_tokens=args.max_new_tokens,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        top_k=args.top_k,
+        no_chat_template=args.no_chat_template,
     )
     if not status:
-        sys.stderr.write("Failed to start server.\n")
+        msg = "Failed to start server."
+        sys.stderr.write(msg + "\n")
+        print(
+            json.dumps(
+                {
+                    "status": "error",
+                    "message": msg,
+                    "socket": str(socket_path),
+                    "log": str(log_path),
+                },
+                indent=2,
+            )
+        )
         return 1
     if args.verbose:
         sys.stderr.write(
             f"[INFO] Server started (model={status['model']}, socket={socket_path}).\n"
         )
+    print(
+        json.dumps(
+            {
+                "status": "started",
+                "pid": status.get("pid"),
+                "model": status.get("model"),
+                "socket": str(socket_path),
+                "log": str(log_path),
+                "defaults": status.get("defaults") or defaults,
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
 def _server_stop(args: argparse.Namespace) -> int:
     socket_path = resolve_socket_path(args.socket)
+    log_path = resolve_log_path(args.log_file)
+    defaults = {
+        "max_new_tokens": args.max_new_tokens,
+        "temperature": args.temperature,
+        "top_p": args.top_p,
+        "top_k": args.top_k,
+        "no_chat_template": args.no_chat_template,
+    }
     status = _get_server_status(socket_path)
     if not status:
         if socket_path.exists():
             _remove_stale_socket(socket_path)
         if args.verbose:
             sys.stderr.write("[INFO] No running server found.\n")
+        print(
+            json.dumps(
+                {
+                    "status": "stopped",
+                    "model": args.model or DEFAULT_MLX_MODEL,
+                    "socket": str(socket_path),
+                    "log": str(log_path),
+                    "message": "not running",
+                    "defaults": defaults,
+                },
+                indent=2,
+            )
+        )
         return 0
 
     response = _send_request(socket_path, {"type": "stop"}, timeout=2.0)
     if not response or not response.get("ok"):
-        sys.stderr.write("Failed to stop server.\n")
+        msg = "Failed to stop server."
+        sys.stderr.write(msg + "\n")
+        print(
+            json.dumps(
+                {
+                    "status": "error",
+                    "message": msg,
+                    "pid": status.get("pid"),
+                    "model": status.get("model"),
+                    "socket": str(socket_path),
+                    "log": str(log_path),
+                    "defaults": status.get("defaults"),
+                },
+                indent=2,
+            )
+        )
         return 1
     _wait_for_server(socket_path, timeout=2.0)
     if args.verbose:
         sys.stderr.write("[INFO] Server stopped.\n")
+    print(
+        json.dumps(
+            {
+                "status": "stopped",
+                "pid": status.get("pid"),
+                "model": status.get("model"),
+                "socket": str(socket_path),
+                "log": str(log_path),
+                "defaults": status.get("defaults"),
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
 def _server_status(args: argparse.Namespace) -> int:
     socket_path = resolve_socket_path(args.socket)
+    log_path = resolve_log_path(args.log_file)
     status = _get_server_status(socket_path)
     if not status:
-        print("stopped")
+        print(
+            json.dumps(
+                {
+                    "status": "stopped",
+                    "socket": str(socket_path),
+                    "log": str(log_path),
+                },
+                indent=2,
+            )
+        )
         return 0
     print(
         json.dumps(
@@ -662,7 +957,10 @@ def _server_status(args: argparse.Namespace) -> int:
                 "pid": status.get("pid"),
                 "model": status.get("model"),
                 "socket": str(socket_path),
-            }
+                "log": str(log_path),
+                "defaults": status.get("defaults"),
+            },
+            indent=2,
         )
     )
     return 0
@@ -670,16 +968,13 @@ def _server_status(args: argparse.Namespace) -> int:
 
 def _translate_via_server(args: argparse.Namespace, prompt: str) -> str | None:
     socket_path = resolve_socket_path(args.socket)
+    overrides = _build_request_overrides(args)
     response = _send_request(
         socket_path,
         {
             "type": "translate",
             "prompt": prompt,
-            "max_new_tokens": args.max_new_tokens,
-            "temperature": args.temperature,
-            "top_p": args.top_p,
-            "top_k": args.top_k,
-            "no_chat_template": args.no_chat_template,
+            **overrides,
         },
     )
     if not response or not response.get("ok"):
@@ -687,19 +982,18 @@ def _translate_via_server(args: argparse.Namespace, prompt: str) -> str | None:
     return str(response.get("text", ""))
 
 
-def _handle_translate(args: argparse.Namespace) -> int:
-    configure_logging(args.verbose)
-    text = read_text(args)
-    input_lang, output_lang = resolve_languages(args, text)
-    prompt = PROMPT_TEMPLATE.format(
-        src_lang=LANG_NAME_MAP[input_lang],
-        tgt_lang=LANG_NAME_MAP[output_lang],
-        src_text=text,
-    )
-
+def _translate_prompt(prompt: str, args: argparse.Namespace) -> int:
     server_mode = args.server
     socket_path = resolve_socket_path(args.socket)
     model = args.model or DEFAULT_MLX_MODEL
+
+    if args.stream and server_mode != "never":
+        if server_mode == "always":
+            sys.stderr.write("Streaming is not supported via server.\n")
+            return 1
+        if args.verbose:
+            sys.stderr.write("[INFO] Streaming forces direct execution.\n")
+        server_mode = "never"
 
     if server_mode != "never":
         status = _get_server_status(socket_path)
@@ -722,12 +1016,18 @@ def _handle_translate(args: argparse.Namespace) -> int:
         if socket_path.exists():
             _remove_stale_socket(socket_path)
 
+        gen_args = _resolve_generation_args(args)
         status = _start_server(
             model=model,
             socket_path=socket_path,
             log_path=resolve_log_path(args.log_file),
             trust_remote_code=args.trust_remote_code,
             verbose=args.verbose,
+            max_new_tokens=gen_args["max_new_tokens"],
+            temperature=gen_args["temperature"],
+            top_p=gen_args["top_p"],
+            top_k=gen_args["top_k"],
+            no_chat_template=gen_args["no_chat_template"],
         )
         if status:
             if args.verbose:
@@ -743,13 +1043,79 @@ def _handle_translate(args: argparse.Namespace) -> int:
             return 1
 
     args.model = model
+    gen_args = _resolve_generation_args(args)
+    loaded = _load_model(args.model, args.trust_remote_code)
+    model_obj = loaded[0]
+    tokenizer = loaded[1]
     with silence_stderr(not args.verbose):
-        translation = run_mlx(prompt, args)
-    print(translation)
+        if args.stream:
+            _stream_text(
+                model_obj,
+                tokenizer,
+                prompt,
+                max_new_tokens=gen_args["max_new_tokens"],
+                temperature=gen_args["temperature"],
+                top_p=gen_args["top_p"],
+                top_k=gen_args["top_k"],
+                no_chat_template=gen_args["no_chat_template"],
+            )
+        else:
+            translation = _generate_text(
+                model_obj,
+                tokenizer,
+                prompt,
+                max_new_tokens=gen_args["max_new_tokens"],
+                temperature=gen_args["temperature"],
+                top_p=gen_args["top_p"],
+                top_k=gen_args["top_k"],
+                no_chat_template=gen_args["no_chat_template"],
+            )
+            print(translation)
+    return 0
+
+
+def _handle_translate(args: argparse.Namespace) -> int:
+    configure_logging(args.verbose)
+    text = read_text(args)
+    input_lang, output_lang = resolve_languages(args, text)
+    prompt = PROMPT_TEMPLATE.format(
+        src_lang=LANG_NAME_MAP[input_lang],
+        tgt_lang=LANG_NAME_MAP[output_lang],
+        src_text=text,
+    )
+    return _translate_prompt(prompt, args)
+
+
+def _run_interactive() -> int:
+    args = build_translate_parser().parse_args([])
+    args.stream = True
+    if args.verbose:
+        sys.stderr.write("[INFO] Interactive mode (type 'exit' to quit).\n")
+    configure_logging(args.verbose)
+
+    while True:
+        try:
+            line = input(">> ")
+        except EOFError:
+            break
+        line = line.strip()
+        if not line:
+            continue
+        if line.lower() in {"exit", "quit", "q"}:
+            break
+        input_lang, output_lang = resolve_languages(args, line)
+        prompt = PROMPT_TEMPLATE.format(
+            src_lang=LANG_NAME_MAP[input_lang],
+            tgt_lang=LANG_NAME_MAP[output_lang],
+            src_text=line,
+        )
+        _translate_prompt(prompt, args)
     return 0
 
 
 def main() -> int:
+    if not sys.argv[1:] and sys.stdin.isatty():
+        return _run_interactive()
     mode, args = parse_args()
     if mode == "server":
         action = args.action or "start"
