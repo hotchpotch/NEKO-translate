@@ -169,11 +169,8 @@ uv run beko-translate-pdf paper.pdf \
 
 | Model | Hugging Face | License |
 | --- | --- | --- |
-| [CAT-Translate](https://huggingface.co/collections/cyberagent/cat-translate) | `hotchpotch/CAT-Translate-0.8b-mlx-q4` | MIT |
-| [CAT-Translate](https://huggingface.co/collections/cyberagent/cat-translate) | `hotchpotch/CAT-Translate-0.8b-mlx-q8` | MIT |
-| [CAT-Translate](https://huggingface.co/collections/cyberagent/cat-translate) | `hotchpotch/CAT-Translate-1.4b-mlx-q4` | MIT |
-| [CAT-Translate](https://huggingface.co/collections/cyberagent/cat-translate) | `hotchpotch/CAT-Translate-1.4b-mlx-q8` | MIT |
-| [PLaMo 2 Translate](https://huggingface.co/pfnet/plamo-2-translate) | `mlx-community/plamo-2-translate` | [PLaMo Community License](https://plamo.preferredai.jp/info/plamo-community-license-ja) |
+| [CAT-Translate](https://huggingface.co/collections/cyberagent/cat-translate) | `hotchpotch/CAT-Translate-0.8b-mlx-q4` / `hotchpotch/CAT-Translate-0.8b-mlx-q8` / `hotchpotch/CAT-Translate-1.4b-mlx-q4` / `hotchpotch/CAT-Translate-1.4b-mlx-q8` | MIT |
+| [PLaMo 2 Translate](https://huggingface.co/pfnet/plamo-2-translate) | `mlx-community/plamo-2-translate` / `mlx-community/plamo-2-translate-8bit` / `mlx-community/plamo-2-translate-bf16` | [PLaMo Community License](https://plamo.preferredai.jp/info/plamo-community-license-ja) |
 | [HY-MT 1.5](https://github.com/Tencent-Hunyuan/HY-MT) | `mlx-community/HY-MT1.5-1.8B-4bit` / `mlx-community/HY-MT1.5-1.8B-8bit` / `mlx-community/HY-MT1.5-7B-4bit` / `mlx-community/HY-MT1.5-7B-8bit` | [HY-MT License](https://github.com/Tencent-Hunyuan/HY-MT/blob/main/License.txt) |
 
 ## 開発
@@ -206,7 +203,7 @@ uv run --no-sync beko-translate --text "こんにちは"
 
 小型で使いやすそうな MIT ライセンスの翻訳モデル、[CAT Translate](https://huggingface.co/collections/cyberagent/cat-translate)モデルを mac からサクッと使ってみたくて作成しました。プロジェクト名もインスパイアされています。CAT Translate プロジェクトの関係者の方々、ありがとうございます。
 
-また cli は [plamo-translate-cli](https://github.com/pfnet/plamo-translate-cli) が便利だったので、同じように起動しっぱなしで翻訳できる実装を作ってみました。PLaMo は翻訳も cli も便利大変便利です、PLaMo 関連の方々、ありがとうございます。
+また cli は [plamo-translate-cli](https://github.com/pfnet/plamo-translate-cli) が便利だったので、同じように起動しっぱなしで翻訳できる実装を作ってみました。PLaMo は翻訳も cli も大変便利です、PLaMo 関連の方々、ありがとうございます。
 
 ## Author
 
